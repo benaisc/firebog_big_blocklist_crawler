@@ -1,0 +1,35 @@
+name: Gather blacklisted hosts from public rockstars who aggregates them for us
+
+on:
+  schedule:
+    # Run everyday at 5AM UTC
+    - cron:  '0 5 * * *'
+  workflow_dispatch:
+
+jobs:
+
+  gather_and_transform_data:
+    name:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install DuckDB
+        run: bash install_duckdb.sh
+
+      - name: Download datasets, create DuckDB tables and export clean list
+        run: bash run.sh
+
+      - name: Commit and push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          git config --global user.name 'C'
+          git config --global user.email 'benaisc@users.noreply.github.com'
+          git remote set-url --push origin https://benaisc:$GITHUB_TOKEN@github.com/benaisc/firebog_big_blocklist_crawler
+          git add blocklist_ticked_all.txt
+          git commit -am "[ci] Hosts updated on $(date '+%FT%H:%M:%S')"
+          git push
+
