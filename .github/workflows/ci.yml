@@ -14,13 +14,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
+        with:
+          filter: blob:none
 
       - name: Install DuckDB
         run: bash install_duckdb.sh
 
       - name: Download datasets, create DuckDB tables and export clean list
-        run: bash run.sh
+        shell: bash
+        run: duckdb < run.sql
 
       - name: Commit and push
         env:
@@ -32,4 +35,3 @@ jobs:
           git add blocklist_ticked_all.txt
           git commit -am "[ci] Hosts updated on $(date '+%FT%H:%M:%S')"
           git push
-
