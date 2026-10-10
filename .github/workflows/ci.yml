@@ -2,9 +2,16 @@ name: Gather blacklisted hosts from public rockstars who aggregates them for us
 
 on:
   schedule:
-    # Run everyday at 5AM UTC
-    - cron:  '0 5 * * *'
+    # Run everyday at 1AM UTC
+    - cron:  '0 1 * * *'
   workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: blocklist-dwh
+  cancel-in-progress: false
 
 jobs:
 
@@ -19,19 +26,57 @@ jobs:
           filter: blob:none
 
       - name: Install DuckDB
-        run: bash install_duckdb.sh
+        run: |
+          wget -q https://install.duckdb.org/v1.4.5/duckdb_cli-linux-amd64.zip -O "$RUNNER_TEMP/duckdb.zip"
+          unzip -q "$RUNNER_TEMP/duckdb.zip" -d "$HOME/duckdb"
+          echo "$HOME/duckdb" >> "$GITHUB_PATH"
 
-      - name: Download datasets, create DuckDB tables and export clean list
+      - name: Restore DWH from latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download --pattern 'dwh_blocklists.duckdb' \
+            || echo "No previous DWH found, starting fresh"
+
+      - name: Build blocklist and update DWH
         shell: bash
         run: duckdb < run.sql
 
-      - name: Commit and push
+      - name: Build daily digest
+        run: duckdb < digest.sql > digest.md
+
+      - name: Persist DWH to rolling release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config --global user.name 'C'
-          git config --global user.email 'benaisc@users.noreply.github.com'
-          git remote set-url --push origin https://benaisc:$GITHUB_TOKEN@github.com/benaisc/firebog_big_blocklist_crawler
-          git add blocklist_ticked_all.txt
-          git commit -am "[ci] Hosts updated on $(date '+%FT%H:%M:%S')"
-          git push
+          gh release view dwh >/dev/null 2>&1 || \
+            gh release create dwh \
+              --title "DWH state (do not delete)" \
+              --notes "Rolling SCD2 history per-source domains, overwritten on every run." \
+              --prerelease --latest=false
+          gh release upload dwh dwh_blocklists.duckdb --clobber
+
+      - name: Publish daily release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          DATE="$(date -u '+%Y-%m-%d')"
+          TITLE="$DATE wally3k ticked blocklists domains"
+
+          if gh release view "$DATE" >/dev/null 2>&1; then
+            # same-day rerun: update in place
+            gh release upload "$DATE" blocklist_ticked_all.txt --clobber
+            gh release edit "$DATE" --title "$TITLE" --notes-file digest.md --latest
+          else
+            gh release create "$DATE" blocklist_ticked_all.txt \
+              --title "$TITLE" --notes-file digest.md --latest
+          fi
+          
+          # keep only today's dated release (the `dwh` tag never matches the regex)
+          gh release list --limit 100 --json tagName \
+            --jq ".[] | select(.tagName | test(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}$\")) | select(.tagName != \"$DATE\") | .tagName" |
+          while IFS= read -r TAG; do
+            echo "Deleting superseded release: $TAG"
+            gh release delete "$TAG" --cleanup-tag --yes
+          done
