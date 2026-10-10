@@ -35,8 +35,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release download --pattern 'dwh_blocklists.duckdb' \
-            || echo "No previous DWH found, starting fresh"
+          if gh release view dwh >/dev/null 2>&1; then
+            gh release download dwh --pattern 'dwh_blocklists.duckdb'
+          else
+            echo "No dwh release yet, starting fresh"
+          fi
 
       - name: Build blocklist and update DWH
         shell: bash
