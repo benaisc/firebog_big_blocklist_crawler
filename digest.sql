@@ -39,3 +39,5 @@ SELECT count(*) FILTER (WHERE n = 1) AS single_source,
         count(*) FILTER (WHERE n >= 2) AS multi_source,
         round(100.0 * count(*) FILTER (WHERE n >= 2) / count(*), 1) AS pct_multi_source
 FROM (SELECT domain, count(*) AS n FROM cur GROUP BY domain);
+
+DETACH dwh;

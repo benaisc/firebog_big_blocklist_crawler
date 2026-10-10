@@ -40,10 +40,10 @@ jobs:
 
       - name: Build blocklist and update DWH
         shell: bash
-        run: duckdb < run.sql
+        run: duckdb -bail < run.sql
 
       - name: Build daily digest
-        run: duckdb < digest.sql > digest.md
+        run: duckdb -bail < digest.sql > digest.md
 
       - name: Persist DWH to rolling release
         env:
@@ -62,15 +62,14 @@ jobs:
         run: |
           set -euo pipefail
           DATE="$(date -u '+%Y-%m-%d')"
-          TITLE="$DATE wally3k ticked blocklists domains"
 
           if gh release view "$DATE" >/dev/null 2>&1; then
             # same-day rerun: update in place
             gh release upload "$DATE" blocklist_ticked_all.txt --clobber
-            gh release edit "$DATE" --title "$TITLE" --notes-file digest.md --latest
+            gh release edit "$DATE" --title "$DATE" --notes-file digest.md --latest
           else
             gh release create "$DATE" blocklist_ticked_all.txt \
-              --title "$TITLE" --notes-file digest.md --latest
+              --title "$DATE" --notes-file digest.md --latest
           fi
           
           # keep only today's dated release (the `dwh` tag never matches the regex)

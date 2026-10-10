@@ -1,6 +1,3 @@
--- [CLI special commands](https://duckdb.org/docs/api/cli#special-commands-dot-commands)
-.bail on
-
 SET http_retries = 1;
 SET force_download = true;
 
@@ -69,23 +66,47 @@ CREATE TABLE IF NOT EXISTS dwh.blocklist_domain_scd2 (
 
 SET VARIABLE run_ts = (SELECT now()::TIMESTAMP);
 
--- Deduplicated snapshot of this run
-CREATE TEMP VIEW stg_membership AS
-	SELECT DISTINCT source, domain FROM domains;
+-- 1. Close rows that disappeared from the source
+UPDATE dwh.blocklist_domain_scd2 AS t
+SET valid_to = getvariable('run_ts'),
+    is_current = false
+WHERE t.is_current
+  AND NOT EXISTS (
+      SELECT 1 FROM domains s
+      WHERE s.domain = t.domain AND s.source = t.source
+  );
 
--- NOT MATCHED            -> new (or re-appearing) membership: open a new version
--- NOT MATCHED BY SOURCE  -> membership vanished: close the current version
--- (ON includes is_current so closed rows never match; the BY SOURCE guard
---  keeps already-closed rows from being re-closed.)
-MERGE INTO dwh.blocklist_domain_scd2 AS t
-USING stg_membership AS s
-	ON  t.domain = s.domain
-	AND t.source = s.source
-	AND t.is_current
-WHEN NOT MATCHED THEN
-	INSERT (domain, source, valid_from, valid_to, is_current)
-	VALUES (s.domain, s.source, getvariable('run_ts'), TIMESTAMP '9999-12-31', true)
-WHEN NOT MATCHED BY SOURCE AND t.is_current THEN
-	UPDATE SET valid_to = getvariable('run_ts'), is_current = false;
+-- 2. Open rows that are new
+INSERT INTO dwh.blocklist_domain_scd2 (domain, source, valid_from, valid_to, is_current)
+SELECT s.domain, s.source, getvariable('run_ts'), TIMESTAMP '9999-12-31', true
+FROM domains s
+WHERE NOT EXISTS (
+    SELECT 1 FROM dwh.blocklist_domain_scd2 t
+    WHERE t.is_current
+      AND t.domain = s.domain AND t.source = s.source
+);
+
+-- ## QUALITY GATE
+-- Tiny assertion helper: returns true or aborts the script with a message
+CREATE OR REPLACE MACRO assert(ok, msg) AS
+    CASE WHEN ok THEN true ELSE error(msg) END;
+
+-- 1. Volume floor (tune the threshold to your real size)
+SELECT assert(
+    (SELECT count(*) FROM dwh.blocklist_domain_scd2 WHERE is_current) >= 400000,
+    format('SCD2 check: only {} current domains (< 100000)',
+           (SELECT count(*) FROM dwh.blocklist_domain_scd2 WHERE is_current)));
+
+-- 2. Churn guard: the last run must not have closed more than 20% of the current set
+--    (catches a truncated download that would "delete" half the list)
+WITH last_close AS (
+    SELECT max(valid_to) AS ts FROM dwh.blocklist_domain_scd2
+    WHERE valid_to < TIMESTAMP '9999-12-31'
+)
+SELECT assert(
+    coalesce((SELECT count(*) FROM dwh.blocklist_domain_scd2, last_close
+              WHERE valid_to = last_close.ts), 0)
+      <= 0.20 * (SELECT count(*) FROM dwh.blocklist_domain_scd2 WHERE is_current),
+    'SCD2 check: churn > 20% in last run, suspicious partial download');
 
 DETACH dwh;
